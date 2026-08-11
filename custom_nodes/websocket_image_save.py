@@ -4,11 +4,10 @@ Saves images and sends them via WebSocket for real-time preview
 """
 
 import os
-import json
 import folder_paths
 from PIL import Image
 import numpy as np
-import torch
+
 
 class SaveImageWebsocket:
     """
