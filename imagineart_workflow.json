@@ -1,0 +1,96 @@
+{
+  "last_node_id": 12,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "CheckpointLoaderSimple",
+      "pos": [100, 100],
+      "widgets_values": ["sd_xl_base_1.0.safetensors"]
+    },
+    {
+      "id": 2,
+      "type": "CLIPTextEncode",
+      "pos": [250, 50],
+      "widgets_values": ["A cinematic photo of a cyberpunk city, neon lights, 4k, detailed, masterpiece"],
+      "inputs": [{"name": "clip", "node": 1, "slot": 1}]
+    },
+    {
+      "id": 3,
+      "type": "CLIPTextEncode",
+      "pos": [250, 150],
+      "widgets_values": ["worst quality, lowres, watermark, blurry, deformed, ugly"],
+      "inputs": [{"name": "clip", "node": 1, "slot": 1}]
+    },
+    {
+      "id": 4,
+      "type": "EmptyLatentImage",
+      "pos": [100, 250],
+      "widgets_values": [1024, 1024, 1]
+    },
+    {
+      "id": 5,
+      "type": "KSampler",
+      "pos": [450, 150],
+      "widgets_values": [12345, 30, 7.5, "dpmpp_2m", "karras", 0.8],
+      "inputs": [
+        {"name": "model", "node": 1, "slot": 0},
+        {"name": "positive", "node": 2, "slot": 0},
+        {"name": "negative", "node": 3, "slot": 0},
+        {"name": "latent_image", "node": 4, "slot": 0}
+      ]
+    },
+    {
+      "id": 6,
+      "type": "VAEDecode",
+      "pos": [650, 200],
+      "inputs": [
+        {"name": "samples", "node": 5, "slot": 0},
+        {"name": "vae", "node": 1, "slot": 2}
+      ]
+    },
+    {
+      "id": 7,
+      "type": "SaveImage",
+      "pos": [850, 200],
+      "widgets_values": ["imagineart_image"],
+      "inputs": [{"name": "images", "node": 6, "slot": 0}]
+    },
+    {
+      "id": 8,
+      "type": "VAELoader",
+      "pos": [100, 400],
+      "widgets_values": ["vae-ft-mse-840000-ema-pruned.safetensors"]
+    },
+    {
+      "id": 9,
+      "type": "ImageToVideo_SVD",
+      "pos": [650, 400],
+      "widgets_values": [25, 127, 0.1, 1024, 576],
+      "inputs": [
+        {"name": "image", "node": 6, "slot": 0},
+        {"name": "svd_checkpoint", "node": 10, "slot": 0},
+        {"name": "vae", "node": 8, "slot": 0}
+      ]
+    },
+    {
+      "id": 10,
+      "type": "CheckpointLoaderSimple",
+      "pos": [100, 550],
+      "widgets_values": ["svd_xt.safetensors"]
+    },
+    {
+      "id": 11,
+      "type": "VideoCombine",
+      "pos": [900, 450],
+      "widgets_values": [12.5, 0, "h264", "crf", 18, true],
+      "inputs": [{"name": "images", "node": 9, "slot": 0}]
+    },
+    {
+      "id": 12,
+      "type": "SaveVideo",
+      "pos": [1150, 450],
+      "widgets_values": ["imagineart_video"],
+      "inputs": [{"name": "video", "node": 11, "slot": 0}]
+    }
+  ]
+}
