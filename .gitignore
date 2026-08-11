@@ -1,0 +1,51 @@
+﻿# Virtual Environment - NEVER COMMIT
+comfyui_env/
+venv/
+env/
+.env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.dll
+*.dylib
+
+# ComfyUI specific
+user/
+output/
+input/
+temp/
+logs/
+*.log
+*.tmp
+*.lock
+
+# Models - Too large for Git
+models/
+*.safetensors
+*.ckpt
+*.pth
+*.bin
+*.onnx
+*.pb
+*.pt
+*.gguf
+
+# Git files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+*.iml
+.vs/
+
+# System
+desktop.ini
+.BIN/
