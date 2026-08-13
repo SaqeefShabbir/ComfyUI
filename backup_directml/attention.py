@@ -53,9 +53,9 @@ except ImportError:
 
 try:
     COMFY_KITCHEN_INT8_ATTENTION_IS_AVAILABLE = comfy_kitchen.int8_attention_is_available()
-except (AttributeError, ImportError):
+except AttributeError:
     COMFY_KITCHEN_INT8_ATTENTION_IS_AVAILABLE = False
-    
+
 REGISTERED_ATTENTION_FUNCTIONS = {}
 def register_attention_function(name: str, func: Callable):
     # avoid replacing existing functions
