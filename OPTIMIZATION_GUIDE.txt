@@ -1,0 +1,24 @@
+# ============================================
+# OPTIMIZED WORKFLOW FOR CPU
+# ============================================
+
+## Model Choices (Choose one):
+# 1. SDXL Turbo - Steps: 4, CFG: 2.0 (FASTEST)
+# 2. SDXL Lightning - Steps: 8, CFG: 3.0 (FAST)
+# 3. SDXL Base - Steps: 20, CFG: 7.5 (SLOW)
+
+## Recommended Settings:
+- Resolution: 768x768 or 896x896
+- Batch Size: 1
+- Preview Method: none
+
+## KSampler Settings:
+- Seed: Randomize
+- Steps: 4 (Turbo) or 8 (Lightning)
+- CFG: 2.0 (Turbo) or 3.0 (Lightning)
+- Sampler: dpmpp_2m
+- Scheduler: karras
+- Denoise: 1.0
+
+## Negative Prompt:
+"worst quality, blurry, ugly, deformed, lowres, low quality"
