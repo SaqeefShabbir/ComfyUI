@@ -1,0 +1,13 @@
+cd E:\Projects\ComfyUI
+comfyui_env\Scripts\activate
+
+# Optimized startup for speed
+python main.py --listen --cpu --preview-method none --reserve-vram 1024
+
+
+# Enable manager
+cd E:\Projects\ComfyUI
+comfyui_env\Scripts\activate
+
+# Optimized startup for speed
+python main.py --listen --cpu --preview-method none --reserve-vram 1024 --enable-manager
