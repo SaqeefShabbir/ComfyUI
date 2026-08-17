@@ -168,7 +168,7 @@ tokenizers==0.22.2
 toml==0.10.2
 tomli==2.4.1
 torch==2.13.0
-torchaudio==2.11.0
+torchaudio==2.13.0
 torchsde==0.2.6
 torchvision==0.28.0
 tqdm==4.70.0
