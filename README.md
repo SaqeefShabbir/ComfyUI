@@ -428,3 +428,4 @@ This approach allows you to easily switch between the stable fortnightly release
 ### Which GPU should I buy for this?
 
 [See this page for some recommendations](https://github.com/comfyanonymous/ComfyUI/wiki/Which-GPU-should-I-buy-for-ComfyUI)
+" " 
