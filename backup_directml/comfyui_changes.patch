@@ -1,0 +1,472 @@
+diff --git a/comfy/ldm/modules/attention.py b/comfy/ldm/modules/attention.py
+index b22d03d..c3810ff 100644
+--- a/comfy/ldm/modules/attention.py
++++ b/comfy/ldm/modules/attention.py
+@@ -51,7 +51,10 @@ except ImportError:
+         logging.error(f"\n\nTo use the `--use-flash-attention` feature, the `flash-attn` package must be installed first.\ncommand:\n\t{sys.executable} -m pip install flash-attn")
+         exit(-1)
+ 
+-COMFY_KITCHEN_INT8_ATTENTION_IS_AVAILABLE = comfy_kitchen.int8_attention_is_available()
++try:
++    COMFY_KITCHEN_INT8_ATTENTION_IS_AVAILABLE = comfy_kitchen.int8_attention_is_available()
++except AttributeError:
++    COMFY_KITCHEN_INT8_ATTENTION_IS_AVAILABLE = False
+ 
+ REGISTERED_ATTENTION_FUNCTIONS = {}
+ def register_attention_function(name: str, func: Callable):
+diff --git a/comfy/quant_ops.py b/comfy/quant_ops.py
+index 18fd2d6..c784d5d 100644
+--- a/comfy/quant_ops.py
++++ b/comfy/quant_ops.py
+@@ -1,300 +1,110 @@
+-import torch
+-import logging
+-
+-from comfy.cli_args import args
+-
+-
+-def _rocm_kitchen_arch_supported():
+-    """comfy-kitchen's INT8 Triton kernels compile tl.dot to matrix-core instructions.
+-    RDNA3/3.5/4 (gfx11xx/gfx12xx) have WMMA and CDNA (gfx9xx) has MFMA; RDNA1/RDNA2
+-    (gfx10xx) have neither, so the INT8 path hangs the GPU there. Gates the automatic
+-    ROCm default so those cards stay on the eager fallback (an explicit
+-    --enable-triton-backend still forces it on any arch)."""
+-    try:
+-        arch = torch.cuda.get_device_properties(torch.cuda.current_device()).gcnArchName.split(":")[0]
+-    except Exception:
+-        return False
+-    if arch.startswith(("gfx11", "gfx12")):
+-        return True
+-    return arch in ("gfx908", "gfx90a", "gfx940", "gfx941", "gfx942", "gfx950")
+-
+-
+-try:
+-    import comfy_kitchen as ck
+-    from comfy_kitchen.tensor import (
+-        QuantizedTensor,
+-        QuantizedLayout,
+-        TensorCoreFP8Layout as _CKFp8Layout,
+-        TensorCoreNVFP4Layout as _CKNvfp4Layout,
+-        TensorCoreConvRotW4A4Layout as _CKTensorCoreConvRotW4A4Layout,
+-        TensorWiseINT8Layout as _CKTensorWiseINT8Layout,
+-        AsymW4A8Int8Layout as _CKAsymW4A8Int8Layout,
+-        register_layout_op,
+-        register_layout_class,
+-        get_layout_class,
+-    )
+-    _CK_AVAILABLE = True
+-    if torch.version.cuda is None:
+-        ck.registry.disable("cuda")
+-    else:
+-        cuda_version = tuple(map(int, str(torch.version.cuda).split('.')))
+-        if cuda_version < (13,):
+-            ck.registry.disable("cuda")
+-            logging.warning("WARNING: You need pytorch with cu130 or higher to use optimized CUDA operations.\nWARNING WARNING WARNING\nIf you are on nvidia 20 series and above it is required that you update your pytorch to cu130 or higher.\n")
+-
+-    # On ROCm/AMD the CUDA backend is unavailable, so Triton is the only accelerated
+-    # comfy-kitchen backend. Enable it by default there, but only on Triton >= 3.7 AND a
+-    # matrix-core GPU (RDNA3+ WMMA gfx11xx/gfx12xx, CDNA MFMA gfx9xx). RDNA1/RDNA2
+-    # (gfx10xx) have no WMMA -> the INT8 tl.dot path hangs the GPU, so they stay eager.
+-    # older Triton lacks libdevice.rint on the HIP backend and hard-crashes the INT8 path.
+-    if args.disable_triton_backend:
+-        ck.registry.disable("triton")
+-    elif args.enable_triton_backend: # or (torch.version.hip is not None and _rocm_kitchen_arch_supported()):
+-        try:
+-            import triton
+-            triton_version = tuple(int(v) for v in triton.__version__.split(".")[:2])
+-            if args.enable_triton_backend or triton_version >= (3, 7):
+-                logging.info("Found triton %s. Enabling comfy-kitchen triton backend.", triton.__version__)
+-            else:
+-                logging.info("Triton %s is too old for the ROCm INT8 path (needs >= 3.7); comfy-kitchen triton backend disabled.", triton.__version__)
+-                ck.registry.disable("triton")
+-        except ImportError as e:
+-            logging.error(f"Failed to import triton, Error: {e}, the comfy-kitchen triton backend will not be available.")
+-            ck.registry.disable("triton")
+-    else:
+-        ck.registry.disable("triton")
+-    for k, v in ck.list_backends().items():
+-        logging.info(f"Found comfy_kitchen backend {k}: {v}")
+-except ImportError as e:
+-    logging.error(f"Failed to import comfy_kitchen, Error: {e}, fp8 and fp4 support will not be available.")
+-    _CK_AVAILABLE = False
+-
+-    class QuantizedTensor:
+-        pass
+-
+-    class _CKFp8Layout:
+-        pass
+-
+-    class _CKNvfp4Layout:
+-        pass
+-
+-    class _CKTensorWiseINT8Layout:
+-        pass
+-
+-    class _CKTensorCoreConvRotW4A4Layout:
+-        pass
+-
+-    class _CKAsymW4A8Int8Layout:
+-        pass
+-
+-    def register_layout_class(name, cls):
+-        pass
+-
+-    def get_layout_class(name):
+-        return None
+-
+-_CK_MXFP8_AVAILABLE = False
+-if _CK_AVAILABLE:
+-    try:
+-        from comfy_kitchen.tensor import TensorCoreMXFP8Layout as _CKMxfp8Layout
+-        _CK_MXFP8_AVAILABLE = True
+-    except ImportError:
+-        logging.warning("comfy_kitchen does not support MXFP8, please update comfy_kitchen.")
+-
+-if not _CK_MXFP8_AVAILABLE:
+-    class _CKMxfp8Layout:
+-        pass
+-
+-import comfy.float
+-
+-# ==============================================================================
+-# FP8 Layouts with Comfy-Specific Extensions
+-# ==============================================================================
+-
+-class _TensorCoreFP8LayoutBase(_CKFp8Layout):
+-    FP8_DTYPE = None  # Must be overridden in subclass
+-
+-    @classmethod
+-    def quantize(cls, tensor, scale=None, stochastic_rounding=0, inplace_ops=False):
+-        if cls.FP8_DTYPE is None:
+-            raise NotImplementedError(f"{cls.__name__} must define FP8_DTYPE")
+-
+-        orig_dtype = tensor.dtype
+-        orig_shape = tuple(tensor.shape)
+-
+-        if isinstance(scale, str) and scale == "recalculate":
+-            scale = torch.amax(tensor.abs()).to(dtype=torch.float32) / torch.finfo(cls.FP8_DTYPE).max
+-            if tensor.dtype not in [torch.float32, torch.bfloat16]:  # Prevent scale from being too small
+-                tensor_info = torch.finfo(tensor.dtype)
+-                scale = (1.0 / torch.clamp((1.0 / scale), min=tensor_info.min, max=tensor_info.max))
+-
+-        if scale is None:
+-            scale = torch.ones((), device=tensor.device, dtype=torch.float32)
+-        if not isinstance(scale, torch.Tensor):
+-            scale = torch.tensor(scale, device=tensor.device, dtype=torch.float32)
+-
+-        if stochastic_rounding > 0:
+-            if inplace_ops:
+-                tensor *= (1.0 / scale).to(tensor.dtype)
+-            else:
+-                tensor = tensor * (1.0 / scale).to(tensor.dtype)
+-            qdata = comfy.float.stochastic_rounding(tensor, dtype=cls.FP8_DTYPE, seed=stochastic_rounding)
+-        else:
+-            qdata = ck.quantize_per_tensor_fp8(tensor, scale, cls.FP8_DTYPE)
+-
+-        params = cls.Params(scale=scale.float(), orig_dtype=orig_dtype, orig_shape=orig_shape)
+-        return qdata, params
+-
+-
+-class TensorCoreMXFP8Layout(_CKMxfp8Layout):
+-    @classmethod
+-    def quantize(cls, tensor, scale=None, stochastic_rounding=0, inplace_ops=False):
+-        if tensor.dim() != 2:
+-            raise ValueError(f"MXFP8 requires 2D tensor, got {tensor.dim()}D")
+-
+-        orig_dtype = tensor.dtype
+-        orig_shape = tuple(tensor.shape)
+-
+-        padded_shape = cls.get_padded_shape(orig_shape)
+-        needs_padding = padded_shape != orig_shape
+-
+-        if stochastic_rounding > 0:
+-            qdata, block_scale = comfy.float.stochastic_round_quantize_mxfp8_by_block(tensor, pad_32x=needs_padding, seed=stochastic_rounding)
+-        else:
+-            qdata, block_scale = ck.quantize_mxfp8(tensor, pad_32x=needs_padding)
+-
+-        params = cls.Params(
+-            scale=block_scale,
+-            orig_dtype=orig_dtype,
+-            orig_shape=orig_shape,
+-        )
+-        return qdata, params
+-
+-
+-class TensorCoreNVFP4Layout(_CKNvfp4Layout):
+-    @classmethod
+-    def quantize(cls, tensor, scale=None, stochastic_rounding=0, inplace_ops=False):
+-        if tensor.dim() != 2:
+-            raise ValueError(f"NVFP4 requires 2D tensor, got {tensor.dim()}D")
+-
+-        orig_dtype = tensor.dtype
+-        orig_shape = tuple(tensor.shape)
+-
+-        if scale is None or (isinstance(scale, str) and scale == "recalculate"):
+-            scale = torch.amax(tensor.abs()) / (ck.float_utils.F8_E4M3_MAX * ck.float_utils.F4_E2M1_MAX)
+-
+-        if not isinstance(scale, torch.Tensor):
+-            scale = torch.tensor(scale)
+-        scale = scale.to(device=tensor.device, dtype=torch.float32)
+-
+-        padded_shape = cls.get_padded_shape(orig_shape)
+-        needs_padding = padded_shape != orig_shape
+-
+-        if stochastic_rounding > 0:
+-            qdata, block_scale = comfy.float.stochastic_round_quantize_nvfp4_by_block(tensor, scale, pad_16x=needs_padding, seed=stochastic_rounding)
+-        else:
+-            qdata, block_scale = ck.quantize_nvfp4(tensor, scale, pad_16x=needs_padding)
+-
+-        params = cls.Params(
+-            scale=scale,
+-            orig_dtype=orig_dtype,
+-            orig_shape=orig_shape,
+-            block_scale=block_scale,
+-        )
+-        return qdata, params
+-
+-
+-class TensorCoreFP8E4M3Layout(_TensorCoreFP8LayoutBase):
+-    FP8_DTYPE = torch.float8_e4m3fn
+-
+-
+-class TensorCoreFP8E5M2Layout(_TensorCoreFP8LayoutBase):
+-    FP8_DTYPE = torch.float8_e5m2
+-
+-
+-# Backward compatibility alias - default to E4M3
+-TensorCoreFP8Layout = TensorCoreFP8E4M3Layout
+-TensorWiseINT8Layout = _CKTensorWiseINT8Layout
+-TensorCoreConvRotW4A4Layout = _CKTensorCoreConvRotW4A4Layout
+-AsymW4A8Int8Layout = _CKAsymW4A8Int8Layout
+-
+-# ==============================================================================
+-# Registry
+-# ==============================================================================
+-
+-register_layout_class("TensorCoreFP8Layout", TensorCoreFP8Layout)
+-register_layout_class("TensorCoreFP8E4M3Layout", TensorCoreFP8E4M3Layout)
+-register_layout_class("TensorCoreFP8E5M2Layout", TensorCoreFP8E5M2Layout)
+-register_layout_class("TensorCoreNVFP4Layout", TensorCoreNVFP4Layout)
+-register_layout_class("TensorWiseINT8Layout", _CKTensorWiseINT8Layout)
+-register_layout_class("TensorCoreConvRotW4A4Layout", _CKTensorCoreConvRotW4A4Layout)
+-if _CK_MXFP8_AVAILABLE:
+-    register_layout_class("TensorCoreMXFP8Layout", TensorCoreMXFP8Layout)
+-register_layout_class("AsymW4A8Int8Layout", _CKAsymW4A8Int8Layout)
++﻿import torch
++
++class QuantizedLayout: pass
++
++class QuantizedTensor:
++    def __init__(self, tensor, *args, **kwargs):
++        self.tensor = tensor
++        self.quantization_type = kwargs.get('quantization_type', None)
++    def __call__(self, *args, **kwargs):
++        return self.tensor
++    def to(self, *args, **kwargs):
++        return self
++    def cpu(self):
++        return self
++    def cuda(self):
++        return self
++    def __repr__(self):
++        return f'QuantizedTensor({self.tensor})'
++
++# ALL LAYOUT CLASSES
++class TensorWiseINT8Layout(QuantizedLayout): pass
++class TensorCoreConvRotW4A4Layout(QuantizedLayout): pass
++class TensorCoreConvRotW4A4Features: pass
++class AsymW4A8Int8Layout(QuantizedLayout): pass
++class SymW4A8Int8Layout(QuantizedLayout): pass
++class FP8Layout(QuantizedLayout): pass
++class FP4Layout(QuantizedLayout): pass
++class Int8Layout(QuantizedLayout): pass
++class W4A8Int8Layout(QuantizedLayout): pass
++class W4A16Layout(QuantizedLayout): pass
++class W4A8Layout(QuantizedLayout): pass
++class Int4Layout(QuantizedLayout): pass
++class FP16Layout(QuantizedLayout): pass
++class FP32Layout(QuantizedLayout): pass
++class BF16Layout(QuantizedLayout): pass
++class Int4PackedLayout(QuantizedLayout): pass
++class Int8PackedLayout(QuantizedLayout): pass
++class TensorCoreFP8Layout(QuantizedLayout): pass
++class TensorCoreMXFP8Layout(QuantizedLayout): pass
++class TensorCoreNVFP4Layout(QuantizedLayout): pass
++class TensorCoreSVDQuantW4A4Layout(QuantizedLayout): pass
++class TensorCoreAWQW4A16Layout(QuantizedLayout): pass
++
++# ============================================
++# QUANT_ALGOS
++# ============================================
+ 
+ QUANT_ALGOS = {
+-    "float8_e4m3fn": {
+-        "storage_t": torch.float8_e4m3fn,
+-        "parameters": {"weight_scale", "input_scale"},
+-        "comfy_tensor_layout": "TensorCoreFP8E4M3Layout",
+-    },
+-    "float8_e5m2": {
+-        "storage_t": torch.float8_e5m2,
+-        "parameters": {"weight_scale", "input_scale"},
+-        "comfy_tensor_layout": "TensorCoreFP8E5M2Layout",
+-    },
+-    "nvfp4": {
+-        "storage_t": torch.uint8,
+-        "parameters": {"weight_scale", "weight_scale_2", "input_scale", "pre_quant_scale"},
+-        "comfy_tensor_layout": "TensorCoreNVFP4Layout",
+-        "group_size": 16,
+-    },
++    'int8': 'int8',
++    'fp8': 'fp8',
++    'fp4': 'fp4',
++    'w4a8': 'w4a8',
++    'w4a16': 'w4a16',
++    'w4a8_int8': 'w4a8_int8',
++    'tensor_wise_int8': 'tensor_wise_int8',
++    'tensor_core_conv_rot_w4a4': 'tensor_core_conv_rot_w4a4',
++    'asym_w4a8_int8': 'asym_w4a8_int8',
++    'sym_w4a8_int8': 'sym_w4a8_int8',
++    'tensor_core_awq_w4a16': 'tensor_core_awq_w4a16',
++    'tensor_core_fp8': 'tensor_core_fp8',
++    'tensor_core_mx_fp8': 'tensor_core_mx_fp8',
++    'tensor_core_nv_fp4': 'tensor_core_nv_fp4',
++    'tensor_core_svd_quant_w4a4': 'tensor_core_svd_quant_w4a4',
+ }
+ 
+-if _CK_MXFP8_AVAILABLE:
+-    QUANT_ALGOS["mxfp8"] = {
+-        "storage_t": torch.float8_e4m3fn,
+-        "parameters": {"weight_scale", "input_scale"},
+-        "comfy_tensor_layout": "TensorCoreMXFP8Layout",
+-        "group_size": 32,
+-    }
+-
+-QUANT_ALGOS["int8_tensorwise"] = {
+-    "storage_t": torch.int8,
+-    "parameters": {"weight_scale"},
+-    "comfy_tensor_layout": "TensorWiseINT8Layout",
+-    "quantize_input": False,
++# ============================================
++# LAYOUT CLASS MAPPING
++# ============================================
++
++_LAYOUT_CLASS_MAP = {
++    'tensor_wise_int8': TensorWiseINT8Layout,
++    'tensor_core_conv_rot_w4a4': TensorCoreConvRotW4A4Layout,
++    'asym_w4a8_int8': AsymW4A8Int8Layout,
++    'sym_w4a8_int8': SymW4A8Int8Layout,
++    'fp8': FP8Layout,
++    'fp4': FP4Layout,
++    'int8': Int8Layout,
++    'w4a8_int8': W4A8Int8Layout,
++    'w4a16': W4A16Layout,
++    'w4a8': W4A8Layout,
++    'int4': Int4Layout,
++    'fp16': FP16Layout,
++    'fp32': FP32Layout,
++    'bf16': BF16Layout,
++    'int4_packed': Int4PackedLayout,
++    'int8_packed': Int8PackedLayout,
++    'tensor_core_awq_w4a16': TensorCoreAWQW4A16Layout,
++    'tensor_core_fp8': TensorCoreFP8Layout,
++    'tensor_core_mx_fp8': TensorCoreMXFP8Layout,
++    'tensor_core_nv_fp4': TensorCoreNVFP4Layout,
++    'tensor_core_svd_quant_w4a4': TensorCoreSVDQuantW4A4Layout,
+ }
+ 
+-QUANT_ALGOS["convrot_w4a4"] = {
+-    "storage_t": torch.int8,
+-    "parameters": {"weight_scale"},
+-    "comfy_tensor_layout": "TensorCoreConvRotW4A4Layout",
+-    "quantize_input": False,
+-}
++def get_layout_class(layout_name):
++    """Get the layout class for a given layout name"""
++    return _LAYOUT_CLASS_MAP.get(layout_name, None)
+ 
+-QUANT_ALGOS["asym_w4a8_int8"] = {
+-    "storage_t": torch.int8,
+-    "parameters": {"weight_scale"},
+-    "comfy_tensor_layout": "AsymW4A8Int8Layout",
+-    "quantize_input": False,
+-}
++def is_quantized_tensor(tensor):
++    return False
++
++def quantize_tensor(tensor, layout):
++    return tensor
+ 
++def dequantize_tensor(tensor):
++    return tensor
+ 
+-# ==============================================================================
+-# Re-exports for backward compatibility
+-# ==============================================================================
++def get_quant_algo(name):
++    return QUANT_ALGOS.get(name, None)
+ 
+-__all__ = [
+-    "QuantizedTensor",
+-    "QuantizedLayout",
+-    "TensorCoreFP8Layout",
+-    "TensorCoreFP8E4M3Layout",
+-    "TensorCoreFP8E5M2Layout",
+-    "TensorCoreNVFP4Layout",
+-    "TensorCoreConvRotW4A4Layout",
+-    "TensorWiseINT8Layout",
+-    "AsymW4A8Int8Layout",
+-    "QUANT_ALGOS",
+-    "register_layout_op",
+-]
++print('✅ quant_ops loaded with get_layout_class')
+diff --git a/main.py b/main.py
+index 361b1fc..484f05f 100644
+--- a/main.py
++++ b/main.py
+@@ -591,3 +591,4 @@ if __name__ == "__main__":
+     finally:
+         asset_seeder.shutdown()
+         cleanup_temp()
++
+diff --git a/requirements.txt b/requirements.txt
+index ebef6d6..b6dbeda 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -19,7 +19,6 @@ scipy
+ tqdm
+ psutil
+ alembic
+-SQLAlchemy>=2.0.0
+ filelock
+ av>=16.0.0
+ comfy-kitchen==0.2.30
+@@ -27,6 +26,9 @@ comfy-aimdo==0.4.13
+ requests
+ simpleeval>=1.0.0
+ blake3
++sqlalchemy==2.0.52
++pyyaml==6.0.3
++tqdm==4.70.0
+ 
+ #non essential dependencies:
+ kornia>=0.7.1
+@@ -161,16 +163,15 @@ simpleeval==1.0.7
+ six==1.17.0
+ smmap==5.0.3
+ spandrel==0.4.2
+-SQLAlchemy==2.0.51
+-sympy==1.14.0
++sympy==1.13.1
+ tifffile==2025.5.10
+ tokenizers==0.22.2
+ toml==0.10.2
+ tomli==2.4.1
+-torch==2.13.0
++torch==2.5.0
+ torchaudio==2.11.0
+ torchsde==0.2.6
+-torchvision==0.28.0
++torchvision==0.20.0
+ tqdm==4.70.0
+ trampoline==0.1.2
+ transformers==5.15.0
