@@ -1,0 +1,99 @@
+{
+  "last_node_id": 5,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadImage",
+      "pos": [100, 100],
+      "size": [315, 200],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [1], "slot_index": 0},
+        {"name": "MASK", "type": "MASK", "links": null, "slot_index": 1}
+      ],
+      "properties": {},
+      "widgets_values": ["your_image.png", "image"]
+    },
+    {
+      "id": 2,
+      "type": "ImageScale",
+      "pos": [450, 100],
+      "size": [315, 150],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "image", "type": "IMAGE", "link": 1}
+      ],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [2], "slot_index": 0}
+      ],
+      "properties": {},
+      "widgets_values": [1024, 576, "lanczos"]
+    },
+    {
+      "id": 3,
+      "type": "CheckpointLoaderSimple",
+      "pos": [100, 450],
+      "size": [315, 98],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "MODEL", "type": "MODEL", "links": [3], "slot_index": 0},
+        {"name": "CLIP", "type": "CLIP", "links": null, "slot_index": 1},
+        {"name": "VAE", "type": "VAE", "links": [4], "slot_index": 2}
+      ],
+      "properties": {},
+      "widgets_values": ["svd_xt.safetensors"]
+    },
+    {
+      "id": 4,
+      "type": "ImageToVideoSVD",
+      "pos": [600, 250],
+      "size": [400, 250],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "image", "type": "IMAGE", "link": 2},
+        {"name": "model", "type": "MODEL", "link": 3},
+        {"name": "vae", "type": "VAE", "link": 4}
+      ],
+      "outputs": [
+        {"name": "VIDEO", "type": "VIDEO", "links": [5], "slot_index": 0}
+      ],
+      "properties": {},
+      "widgets_values": [14, 127, 0.1, 1024, 576, 5]
+    },
+    {
+      "id": 5,
+      "type": "SaveVideo",
+      "pos": [1050, 300],
+      "size": [315, 200],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "video", "type": "VIDEO", "link": 5}
+      ],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": ["ComfyUI_video", 8]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "IMAGE"],
+    [2, 2, 0, 4, 0, "IMAGE"],
+    [3, 3, 0, 4, 1, "MODEL"],
+    [4, 3, 2, 4, 2, "VAE"],
+    [5, 4, 0, 5, 0, "VIDEO"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {}
+}
